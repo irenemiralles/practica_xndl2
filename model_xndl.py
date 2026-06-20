@@ -1,13 +1,15 @@
 # Laboratori XNDL final notat - classificacio d'imatges 32x32 en 14 categories
 #
-# Model entrenat DES DE ZERO (cap pes preentrenat). CNN en lloc d'una xarxa
-# fully-connected: explota l'estructura espacial i te molts menys parametres
-# (connectivitat esparsa + comparticio de pesos).
+# L'esquelet del professorat usava una xarxa fully-connected: aplanava la
+# imatge i la passava per capes denses. Aixo tracta cada pixel com a
+# independent i ignora l'estructura espacial, a mes de gastar molts parametres.
+# El substituim per una CNN, que comparteix els filtres per tota la imatge
+# (detecta el mateix patro en qualsevol posicio) amb molts menys parametres.
 #
 # Metodologia (sense data leakage):
 #   - El 'val' nomes s'usa per a l'avaluacio FINAL.
-#   - Seleccio de model amb hold-out estratificat tret del 'train' (dev).
-#     Nomes desem el model quan el dev millora (descartem epoques pitjors).
+#   - La seleccio de model es fa amb un hold-out estratificat tret del 'train'
+#     (dev), i nomes desem el model quan el dev millora.
 
 import os, time, random
 import numpy as np
@@ -20,19 +22,20 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score, accuracy_score
 
 # ----- Hiperparametres -----
-DATA_DIR        = "./dades"   # ../dades/{train,val,test}
-BATCH_SIZE      = 256          # 32x32 ocupen poc -> batch gran = passos estables i rapids
-EPOCHS          = 20
-LR              = 1e-3         # Adam, LR adaptatiu (apunts 14.3)
-WEIGHT_DECAY    = 1e-4         # regularitzacio L2 suau; el gap train/dev no mostra overfitting
-DROPOUT         = 0.2          # regularitzacio moderada (apunts 14.4)
-DEV_FRACTION    = 0.10         # fraccio del train reservada per seleccionar model
-NUM_WORKERS     = 4            # paral.lelitza l'augmentacio (NO es teoria, es velocitat). Windows: si peta, 0
+DATA_DIR        = "./dades"    # ./dades/{train,val,test}
+BATCH_SIZE      = 256          # batch gran: gradient estable i bon aprofitament de la GPU
+EPOCHS          = 30
+LR              = 1e-3         # learning rate inicial per a Adam
+WEIGHT_DECAY    = 1e-4         # penalitzacio L2 suau (el gap train/dev no mostra overfitting)
+DROPOUT         = 0.2          # apaga neurones al classificador per evitar coadaptacio
+DEV_FRACTION    = 0.10         # part del train reservada per seleccionar el millor model
+NUM_WORKERS     = 4            # processos que preparen dades en paral.lel. A Windows, si peta, posa 0
 SEED            = 42
 
 
-# Precarreguem cada split a memoria (uint8) un sol cop: l'I/O de disc (112k
-# PNGs) era el coll d'ampolla; despres cada epoca es independent del disc.
+# Carreguem cada split sencer a memoria (uint8) un sol cop. Llegir 112k PNGs
+# del disc a cada epoca era el coll d'ampolla real; fent-ho una vegada, les
+# epoques deixen de dependre del disc i en caben moltes mes dins del temps.
 def preload(folder, workers):
     ds = datasets.ImageFolder(folder, transform=transforms.Compose([
         transforms.Grayscale(), transforms.PILToTensor()]))  # uint8 [1,32,32]
@@ -48,14 +51,16 @@ class MemDS(Dataset):
         self.X, self.Y = X, Y
         aug = []
         if train:
-            # Data augmentation (apunts 14.4). Crop amb padding + flip: barat
-            # (nomes pad+tall, sense grid_sample) i dona invariancia a petites
-            # translacions sense penalitzar el temps per epoca.
+            # Augmentacio nomes al train: genera variacions realistes perque el
+            # model generalitzi millor. Crop amb padding + flip es barat (no fa
+            # interpolacio) i dona robustesa a petits desplacaments i al mirall.
             aug = [transforms.RandomCrop(32, padding=4),
                    transforms.RandomHorizontalFlip(0.5)]
+        # Passem a float [0,1] i normalitzem amb la mitjana/std reals del train
+        # (centra les dades i estabilitza l'entrenament millor que 0.5/0.5).
         self.tf = transforms.Compose(
-            [transforms.ConvertImageDtype(torch.float32)] + aug +   # uint8 -> [0,1]
-            [transforms.Normalize((mean,), (std,))])                # normalitza amb stats reals
+            [transforms.ConvertImageDtype(torch.float32)] + aug +
+            [transforms.Normalize((mean,), (std,))])
 
     def __len__(self):
         return len(self.Y)
@@ -64,20 +69,29 @@ class MemDS(Dataset):
         return self.tf(self.X[i]), int(self.Y[i])
 
 
-# CNN tipus VGG, piramide (apunts sec. 9): mida espacial baixa (pooling),
-# canals pugen. Filtres 3x3 (apilats > un filtre gran, apunts 7.1). Canals
-# 64/128/256: ampliem capacitat perque el dev >= train indicava underfitting.
+# CNN amb forma de piramide: la mida espacial baixa (pooling) mentre el nombre
+# de canals puja, de manera que les primeres capes capten patrons simples
+# (vores, traços) i les profundes els combinen en formes completes.
 class SmallCNN(nn.Module):
     def __init__(self, n_classes, in_ch=1, p_drop=0.2):
         super().__init__()
 
         def block(c_in, c_out):
+            # Tres convolucions 3x3 apilades per bloc: cada una afegeix una
+            # no-linealitat i amplia el camp receptiu efectiu, de manera que el
+            # bloc capta patrons mes complexos amb molts menys parametres que
+            # un sol filtre gran. Ampliem aixi la profunditat del model donat,
+            # que es el que ens faltava (anavem justos de capacitat). El
+            # max-pool final redueix la mida i aporta invariancia a petites
+            # translacions.
             return nn.Sequential(
                 nn.Conv2d(c_in,  c_out, 3, padding=1, bias=False),
-                nn.BatchNorm2d(c_out), nn.ReLU(inplace=True),   # BatchNorm (14.4) + ReLU no saturada (14.2)
+                nn.BatchNorm2d(c_out), nn.ReLU(inplace=True),   # BatchNorm: normalitza activacions i estabilitza
                 nn.Conv2d(c_out, c_out, 3, padding=1, bias=False),
                 nn.BatchNorm2d(c_out), nn.ReLU(inplace=True),
-                nn.MaxPool2d(2),                                 # invariancia a petites translacions (8.3)
+                nn.Conv2d(c_out, c_out, 3, padding=1, bias=False),
+                nn.BatchNorm2d(c_out), nn.ReLU(inplace=True),
+                nn.MaxPool2d(2),
             )
 
         self.features = nn.Sequential(
@@ -86,7 +100,9 @@ class SmallCNN(nn.Module):
             block(128, 256),     # 8  -> 4
         )
         self.head = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),   # global average pooling (8.4): menys parametres que aplanar
+            # Global average pooling en lloc d'aplanar + capa densa gran: molts
+            # menys parametres i menys risc de sobreajustament.
+            nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
             nn.Dropout(p_drop),
             nn.Linear(256, n_classes),
@@ -113,7 +129,7 @@ def main():
     random.seed(SEED); np.random.seed(SEED)
     torch.manual_seed(SEED); torch.cuda.manual_seed_all(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = True   # mida d'entrada fixa -> cuDNN tria el millor algorisme
     print(f"Device: {device}")
     if device.type == "cuda":
         print(f"GPU: {torch.cuda.get_device_name(0)}")
@@ -125,10 +141,12 @@ def main():
     print(f"Classes ({n_classes}): {classes}")
     print(f"Train: {len(Ytr):,}  |  Val: {len(Yva):,}")
 
-    MEAN = Xtr.float().mean().item() / 255.0   # stats reals (millor que 0.5/0.5)
+    MEAN = Xtr.float().mean().item() / 255.0
     STD  = Xtr.float().std().item()  / 255.0
 
-    # Hold-out estratificat: el dev surt del TRAIN; el val no es toca fins al final
+    # Partim el train en train-real + dev (estratificat per mantenir la
+    # proporcio de classes). El dev guia la seleccio de model; el val queda
+    # intacte fins al final per donar una estimacio neta, sense leakage.
     idx_tr, idx_dev = train_test_split(
         np.arange(len(Ytr)), test_size=DEV_FRACTION,
         stratify=Ytr.numpy(), random_state=SEED)
@@ -154,11 +172,12 @@ def main():
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
-    # Cosine LR: baixa el LR cap al final per afinar la solucio i sortir del
-    # plateau. NO surt dels apunts (sec. 14.3 nomes parla d'Adam); afegit.
+    # Baixem el learning rate de forma progressiva (cosinus) al llarg de
+    # l'entrenament: passos grans al principi per avancar de pressa i passos
+    # petits al final per afinar la solucio i sortir del plateau.
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
-    use_amp = (device.type == "cuda")
+    use_amp = (device.type == "cuda")   # mixed precision: mes rapid a la GPU, sense perdre qualitat
     scaler  = torch.amp.GradScaler(enabled=use_amp)
 
     # ----- Entrenament -----
@@ -182,7 +201,7 @@ def main():
             loss_sum += loss.item() * len(labels)
             correct  += (out.argmax(1) == labels).sum().item()
             total    += len(labels)
-        scheduler.step()   # un pas per epoca
+        scheduler.step()
 
         train_acc = correct / total
         dev_t, dev_p = predict(model, dev_loader, device, use_amp)
@@ -191,18 +210,20 @@ def main():
         print(f"{epoch:>5}  {loss_sum/total:>10.4f}  {train_acc:>8.2%}  "
               f"{dev_acc:>6.2%}  {time.time()-t_start:>5.0f}s")
 
-        if dev_acc > best_dev:           # nomes desem si el dev millora
+        # Ens quedem nomes amb el millor model segons el dev (descartem les
+        # epoques que empitjoren).
+        if dev_acc > best_dev:
             best_dev = dev_acc
             torch.save(model.state_dict(), "best_model.pt")
 
     print(f"\nMillor dev accuracy: {best_dev:.2%}")
     print(f"Temps d'entrenament: {time.time()-t_start:.0f}s")
 
-    # ----- Avaluacio FINAL sobre val (una sola vegada) -----
+    # ----- Avaluacio FINAL sobre val (nomes ara, un sol cop) -----
     model.load_state_dict(torch.load("best_model.pt", map_location=device, weights_only=True))
     val_t, val_p = predict(model, val_loader, device, use_amp)
-    micro = f1_score(val_t, val_p, average="micro")   # metrica oficial (= accuracy)
-    macro = f1_score(val_t, val_p, average="macro")   # info: classes fluixes
+    micro = f1_score(val_t, val_p, average="micro")   # metrica oficial demanada (= accuracy)
+    macro = f1_score(val_t, val_p, average="macro")   # informatiu: detecta classes fluixes
     print(f"\n[VAL] micro-F1: {micro:.4f}  |  macro-F1: {macro:.4f}")
 
 
