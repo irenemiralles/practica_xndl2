@@ -21,7 +21,7 @@ from torchvision import datasets, transforms
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score, accuracy_score
 
-# ----- Hiperparametres -----
+# Hiperparametres 
 DATA_DIR        = os.getenv("DATA_DIR", "./dataset_npz")
 BATCH_SIZE      = 256          # batch gran: gradient estable i bon aprofitament de la GPU
 EPOCHS          = 30
@@ -71,8 +71,7 @@ def preload(folder, workers):
     return torch.cat(xs), torch.cat(ys), ds.classes
 '''
 
-# Nova versió
-
+# Nova versió del preload
 def preload_npz(npz_path):
     data = np.load(npz_path)
     X = torch.from_numpy(data['images'])
@@ -165,12 +164,12 @@ def main():
     random.seed(SEED); np.random.seed(SEED)
     torch.manual_seed(SEED); torch.cuda.manual_seed_all(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    torch.backends.cudnn.benchmark = True   # mida d'entrada fixa -> cuDNN tria el millor algorisme
+    torch.backends.cudnn.benchmark = True   # mida d'entrada fixa i cuDNN tria el millor algorisme
     print(f"Device: {device}")
     if device.type == "cuda":
         print(f"GPU: {torch.cuda.get_device_name(0)}")
 
-    # ----- Dades -----
+    # Dades 
     Xtr, Ytr = preload_npz(os.path.join(DATA_DIR, "train.npz"))
     Xva, Yva = preload_npz(os.path.join(DATA_DIR, "val.npz"))
 
@@ -205,7 +204,7 @@ def main():
     val_loader   = DataLoader(ds_val, batch_size=BATCH_SIZE,
                               num_workers=NUM_WORKERS, persistent_workers=pw, pin_memory=pin)
 
-    # ----- Model i optimitzacio -----
+    # Model i optimitzacio 
     model = SmallCNN(n_classes, p_drop=DROPOUT).to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parametres entrenables: {n_params:,}")
@@ -217,10 +216,10 @@ def main():
     # petits al final per afinar la solucio i sortir del plateau.
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
-    use_amp = (device.type == "cuda")   # mixed precision: mes rapid a la GPU, sense perdre qualitat
+    use_amp = (device.type == "cuda")   # mixed precision
     scaler  = torch.amp.GradScaler(enabled=use_amp)
 
-    # ----- Entrenament -----
+    # Entrenament
     print(f"{'Epoch':>5}  {'Train Loss':>10}  {'Train Acc':>9}  {'Dev Acc':>7}  {'temps':>7}")
     print("-" * 52)
 
@@ -259,11 +258,11 @@ def main():
     print(f"\nMillor dev accuracy: {best_dev:.2%}")
     print(f"Temps d'entrenament: {time.time()-t_start:.0f}s")
 
-    # ----- Avaluacio FINAL sobre val (nomes ara, un sol cop) -----
+    # Avaluacio FINAL sobre val
     model.load_state_dict(torch.load("best_model.pt", map_location=device, weights_only=True))
     val_t, val_p = predict(model, val_loader, device, use_amp)
-    micro = f1_score(val_t, val_p, average="micro")   # metrica oficial demanada (= accuracy)
-    macro = f1_score(val_t, val_p, average="macro")   # informatiu: detecta classes fluixes
+    micro = f1_score(val_t, val_p, average="micro")   
+    macro = f1_score(val_t, val_p, average="macro")   # detectar classes fluixes
     print(f"\n[VAL] micro-F1: {micro:.4f}  |  macro-F1: {macro:.4f}")
 
 
