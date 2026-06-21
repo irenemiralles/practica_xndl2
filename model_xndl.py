@@ -33,7 +33,7 @@ SEED            = 42
 
 # El temps mana; les epoques nomes son un sostre de seguretat.
 
-TIME_LIMIT      = 310      # segons
+TIME_LIMIT      = 301      # segons
 EPOCHS          = 250      # sostre d'epochs, d'aquesta manera ens assegurem que el límit es trobi en el temps
 
 
