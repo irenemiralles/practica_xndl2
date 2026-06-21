@@ -22,7 +22,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score, accuracy_score
 
 # ----- Hiperparametres -----
-DATA_DIR        = "./dades"    # ./dades/{train,val,test}
+DATA_DIR        = os.getenv("DATA_DIR", "./dataset_npz")
 BATCH_SIZE      = 256          # batch gran: gradient estable i bon aprofitament de la GPU
 EPOCHS          = 30
 LR              = 1e-3         # learning rate inicial per a Adam
@@ -33,9 +33,34 @@ NUM_WORKERS     = 4            # processos que preparen dades en paral.lel. A Wi
 SEED            = 42
 
 
+# Ja no s'usa el NpzImageDataset
+'''
+class NpzImageDataset(Dataset):
+    def __init__(self, npz_path):
+        data = np.load(npz_path)
+        self.images = data['images']
+        self.labels = data['labels']
+        
+    def __len__(self):
+        return len(self.labels)
+        
+    def __getitem__(self, idx):
+        img = self.images[idx].astype(np.float32) / 255.0
+        img = (img - 0.5) / 0.5
+        img = torch.from_numpy(img).unsqueeze(0)
+        label = int(self.labels[idx])
+        return img, label
+
+# I ara instancies els datasets així:
+train_ds = NpzImageDataset(os.path.join(DATADIR, 'train.npz'))
+val_ds = NpzImageDataset(os.path.join(DATADIR, 'val.npz'))
+'''
+
 # Carreguem cada split sencer a memoria (uint8) un sol cop. Llegir 112k PNGs
 # del disc a cada epoca era el coll d'ampolla real; fent-ho una vegada, les
 # epoques deixen de dependre del disc i en caben moltes mes dins del temps.
+# Versió antiga amb ImageFolder
+'''
 def preload(folder, workers):
     ds = datasets.ImageFolder(folder, transform=transforms.Compose([
         transforms.Grayscale(), transforms.PILToTensor()]))  # uint8 [1,32,32]
@@ -44,6 +69,17 @@ def preload(folder, workers):
     for x, y in loader:
         xs.append(x); ys.append(y)
     return torch.cat(xs), torch.cat(ys), ds.classes
+'''
+
+# Nova versió
+
+def preload_npz(npz_path):
+    data = np.load(npz_path)
+    X = torch.from_numpy(data['images'])
+    Y = torch.from_numpy(data['labels']).long()
+    if X.ndim == 3:
+        X = X.unsqueeze(1)
+    return X, Y
 
 
 class MemDS(Dataset):
@@ -135,8 +171,12 @@ def main():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
 
     # ----- Dades -----
-    Xtr, Ytr, classes = preload(os.path.join(DATA_DIR, "train"), NUM_WORKERS)
-    Xva, Yva, _       = preload(os.path.join(DATA_DIR, "val"),   NUM_WORKERS)
+    Xtr, Ytr = preload_npz(os.path.join(DATA_DIR, "train.npz"))
+    Xva, Yva = preload_npz(os.path.join(DATA_DIR, "val.npz"))
+
+    with open(os.path.join(DATA_DIR, "classes.txt"), "r") as f:
+        classes = [line.strip() for line in f if line.strip()]
+
     n_classes = len(classes)
     print(f"Classes ({n_classes}): {classes}")
     print(f"Train: {len(Ytr):,}  |  Val: {len(Yva):,}")
