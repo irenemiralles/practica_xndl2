@@ -1,0 +1,14 @@
+apple
+basketball
+brain
+circle
+clock
+compass
+cookie
+donut
+face
+moon
+potato
+sun
+watermelon
+wheel

@@ -29,7 +29,8 @@ LR              = 1e-3         # learning rate inicial per a Adam
 WEIGHT_DECAY    = 1e-4         # penalitzacio L2 suau (el gap train/dev no mostra overfitting)
 DROPOUT         = 0.2          # apaga neurones al classificador per evitar coadaptacio
 DEV_FRACTION    = 0.10         # part del train reservada per seleccionar el millor model
-NUM_WORKERS     = 4            # processos que preparen dades en paral.lel. A Windows, si peta, posa 0
+import sys
+NUM_WORKERS     = 0 if sys.platform in ["darwin", "win32"] else 4  # En Mac/Windows, workers>0 alenteix molt per la còpia de memòria
 SEED            = 42
 
 
@@ -163,8 +164,12 @@ def predict(model, loader, device, use_amp):
 def main():
     random.seed(SEED); np.random.seed(SEED)
     torch.manual_seed(SEED); torch.cuda.manual_seed_all(SEED)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    torch.backends.cudnn.benchmark = True   # mida d'entrada fixa i cuDNN tria el millor algorisme
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     print(f"Device: {device}")
     if device.type == "cuda":
         print(f"GPU: {torch.cuda.get_device_name(0)}")
