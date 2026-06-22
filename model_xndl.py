@@ -25,8 +25,8 @@ from sklearn.metrics import f1_score, accuracy_score
 DATA_DIR        = os.getenv("DATA_DIR", "./dataset_npz")
 BATCH_SIZE      = 256
 LR              = 1e-3
-WEIGHT_DECAY    = 6e-4
-DROPOUT         = 0.25
+WEIGHT_DECAY    = 3e-4
+DROPOUT         = 0.3
 DEV_FRACTION    = 0.10
 NUM_WORKERS     = 4
 SEED            = 42
@@ -59,8 +59,8 @@ class MemDS(Dataset):
             # (fa el train mes variat enlloc de limitar el model).
             aug = [
                 transforms.RandomAffine(
-                    degrees=12,
-                    translate=(0.08, 0.08),
+                    degrees=8,
+                    translate=(0.06, 0.06),
                     scale=(0.9, 1.1)
                 ),
                 transforms.RandomHorizontalFlip(0.5)
@@ -79,6 +79,35 @@ class MemDS(Dataset):
         return self.tf(self.X[i]), int(self.Y[i])
 
 
+class ResidualBlock(nn.Module):
+    def __init__(self, c_in, c_out):
+        super().__init__()
+
+        self.conv1 = nn.Conv2d(c_in, c_out, 3, padding=1, bias=False)
+        self.bn1   = nn.BatchNorm2d(c_out)
+        self.relu  = nn.ReLU(inplace=True)
+
+        self.conv2 = nn.Conv2d(c_out, c_out, 3, padding=1, bias=False)
+        self.bn2   = nn.BatchNorm2d(c_out)
+
+        if c_in != c_out:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(c_in, c_out, 1, bias=False),
+                nn.BatchNorm2d(c_out)
+            )
+        else:
+            self.shortcut = nn.Identity()
+
+    def forward(self, x):
+        identity = self.shortcut(x)
+
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+
+        out = self.relu(out + identity)
+        return out
+
+
 # CNN amb forma de piramide: la mida espacial baixa (pooling) mentre el nombre
 # de canals puja, de manera que les primeres capes capten patrons simples
 # i les profundes els combinen en formes completes.
@@ -86,26 +115,17 @@ class SmallCNN(nn.Module):
     def __init__(self, n_classes, in_ch=1, p_drop=DROPOUT):
         super().__init__()
 
-        def block(c_in, c_out):
-            # Tres convolucions 3x3 apilades per bloc: cada una afegeix una
-            # no-linealitat i amplia el camp receptiu efectiu, de manera que el
-            # bloc capta patrons mes complexos amb molts menys parametres que
-            # un sol filtre gran.
-            # El max-pool final redueix la mida i aporta invariancia a petites translacions.
+        def stage(c_in, c_out):
             return nn.Sequential(
-                nn.Conv2d(c_in,  c_out, 3, padding=1, bias=False),
-                nn.BatchNorm2d(c_out), nn.ReLU(inplace=True),
-                nn.Conv2d(c_out, c_out, 3, padding=1, bias=False),
-                nn.BatchNorm2d(c_out), nn.ReLU(inplace=True),
-                nn.Conv2d(c_out, c_out, 3, padding=1, bias=False),
-                nn.BatchNorm2d(c_out), nn.ReLU(inplace=True),
+                ResidualBlock(c_in, c_out),
+                ResidualBlock(c_out, c_out),
                 nn.MaxPool2d(2),
             )
 
         self.features = nn.Sequential(
-            block(in_ch, 64),    # 32 -> 16
-            block(64, 128),      # 16 -> 8
-            block(128, 256),     # 8  -> 4
+            stage(in_ch, 64),    # 32 -> 16
+            stage(64, 128),      # 16 -> 8
+            stage(128, 256),     # 8  -> 4
         )
 
         self.head = nn.Sequential(
@@ -224,7 +244,7 @@ def main():
     # Canvi afegit: label smoothing per reduir sobreconfiança del model
     criterion = nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTHING)
 
-    optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
 
     use_amp = (device.type == "cuda")   # mixed precision: mes rapid a la GPU
     scaler  = torch.amp.GradScaler(enabled=use_amp)
