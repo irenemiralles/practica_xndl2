@@ -33,7 +33,7 @@ SEED            = 42
 LABEL_SMOOTHING = 0.05
 
 # El temps mana; les epoques nomes son un sostre de seguretat.
-TIME_LIMIT      = 1150
+TIME_LIMIT      = 300
 EPOCHS          = 250
 
 
