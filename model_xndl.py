@@ -83,7 +83,7 @@ class MemDS(Dataset):
 # de canals puja, de manera que les primeres capes capten patrons simples
 # i les profundes els combinen en formes completes.
 class SmallCNN(nn.Module):
-    def __init__(self, n_classes, in_ch=1, p_drop=0.3):
+    def __init__(self, n_classes, in_ch=1, p_drop=DROPOUT):
         super().__init__()
 
         def block(c_in, c_out):
