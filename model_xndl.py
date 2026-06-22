@@ -54,7 +54,8 @@ class MemDS(Dataset):
         if train:
             # Augmentacio nomes al train: genera variacions realistes perque el
             # model generalitzi millor i no memoritzi. Rotacio + desplacament +
-            # escala + mirall; aquestes categories segueixen sent la mateixa
+            # escala + mirall. 
+            # Aquestes categories segueixen sent la mateixa
             # classe sota aquestes transformacions. Ens serveix per controlar l'overfitting
             # (fa el train mes variat enlloc de limitar el model).
             aug = [
@@ -66,7 +67,6 @@ class MemDS(Dataset):
                 transforms.RandomHorizontalFlip(0.5)
             ]
 
-        # Passem a float [0,1] i normalitzem amb la mitjana/std reals del train
         self.tf = transforms.Compose(
             [transforms.ConvertImageDtype(torch.float32)] + aug +
             [transforms.Normalize((mean,), (std,))]
@@ -112,7 +112,7 @@ class ResidualBlock(nn.Module):
 # de canals puja, de manera que les primeres capes capten patrons simples
 # i les profundes els combinen en formes completes.
 class SmallCNN(nn.Module):
-    def __init__(self, n_classes, in_ch=1, p_drop=DROPOUT):
+    def __init__(self, n_classes, in_ch=1, p_drop=0.3):
         super().__init__()
 
         def stage(c_in, c_out):
@@ -129,7 +129,7 @@ class SmallCNN(nn.Module):
         )
 
         self.head = nn.Sequential(
-            # Global average pooling en lloc d'aplanar + capa densa gran: genera molts
+            # Utilitzem global average pooling en lloc d'aplanar + capa densa gran, ja que genera
             # menys parametres i menys risc de sobreajustament.
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
@@ -141,16 +141,13 @@ class SmallCNN(nn.Module):
         # Prediccio normal sobre la imatge original
         out = self.head(self.features(x))
 
-        # Durant l'entrenament NO fem el truc del mirall.
-        # Aixi el train segueix sent normal i no dupliquem el forward.
         if self.training:
             return out
 
-        # En avaluacio/inferencia, el professor fara model(x).
-        # Per tant, el truc del mirall ha d'estar dins del forward.
+
         out_flip = self.head(self.features(torch.flip(x, dims=[3])))
 
-        # Mitjana dels logits de la imatge original i de la imatge reflectida.
+
         return (out + out_flip) / 2
 
 
@@ -246,7 +243,7 @@ def main():
 
     optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
 
-    use_amp = (device.type == "cuda")   # mixed precision: mes rapid a la GPU
+    use_amp = (device.type == "cuda") 
     scaler  = torch.amp.GradScaler(enabled=use_amp)
 
     # Entrenament
@@ -265,7 +262,7 @@ def main():
             print("Temps esgotat; aturant per cabre en el limit.")
             break
 
-        # Cosine basat en temps: baixa el LR de LR fins a aprox 0 al llarg de
+        # Cosine basat en temps: baixem el LR de LR fins a aprox 0 al llarg de
         # TIME_LIMIT, independentment de quantes epoques surtin.
         frac = min(elapsed / TIME_LIMIT, 1.0)
         cur_lr = 0.5 * LR * (1.0 + math.cos(math.pi * frac))
