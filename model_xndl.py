@@ -241,7 +241,7 @@ def main():
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parametres entrenables: {n_params:,}")
 
-    # Canvi afegit: label smoothing per reduir sobreconfiança del model
+    # Usem label smoothing a la loss per reduir la sobreconfiança de la xarxa
     criterion = nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTHING)
 
     optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
